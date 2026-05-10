@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Kitchen — Your weekly meal plan</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body class="min-h-screen">
+  <header class="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-black/5">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-700 grid place-items-center text-white font-bold">K</div>
+        <span class="font-display text-xl font-semibold">Kitchen</span>
+      </div>
+      <nav id="nav" class="flex gap-1 items-center"></nav>
+    </div>
+  </header>
+
+  <main id="root"></main>
+
+  <div id="floating-bar" class="floating-bar"></div>
+
+  <script src="meals.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
