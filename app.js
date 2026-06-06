@@ -337,10 +337,15 @@ function renderSchedule() {
       <h1 class="font-display text-4xl md:text-5xl font-semibold mt-2">Drag a meal onto a day.</h1>
       <p class="text-gray-600 mt-3 max-w-xl">Or just tap — we'll slot it into the next open night.</p>
     </div>
-    <button class="btn-primary" id="go-shopping">Build shopping list →</button>
+    <div class="flex gap-2 flex-wrap">
+      ${state.picks.length > 0 ? `<button class="btn-ghost" id="share-plan">🔗 Share plan</button>` : ""}
+      <button class="btn-primary" id="go-shopping">Build shopping list →</button>
+    </div>
   `;
   page.appendChild(header);
   header.querySelector("#go-shopping").onclick = () => { state.page = "shopping"; render(); };
+  const shareBtn = header.querySelector("#share-plan");
+  if (shareBtn) shareBtn.onclick = () => openShareModal(buildShareUrl());
 
   if (state.picks.length === 0) {
     const empty = document.createElement("div");
@@ -993,7 +998,166 @@ function renderRecipeEditor() {
   };
 }
 
+// ───────── Share a plan via link (no backend) ─────────
+// Picks live in localStorage, which is private to one browser. To get a plan
+// from one person to another we encode it into the URL hash they can open.
+// The hash (not a query string) keeps the payload client-side and works on
+// static hosting like GitHub Pages.
+function encodePlan(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function decodePlan(code) {
+  let b64 = code.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function buildShareUrl() {
+  // Bundle only the custom recipes a pick references, so they resolve on the
+  // recipient's device (built-in meals already exist there, keyed by id).
+  const referenced = new Set(state.picks.map((p) => p.mealId));
+  const recipes = MEALS.filter((m) => m.custom && referenced.has(m.id));
+  const code = encodePlan({ v: 1, picks: state.picks, recipes });
+  return location.origin + location.pathname + "#plan=" + code;
+}
+
+// A shared link is untrusted input. The renderers build HTML with innerHTML,
+// so neutralise the text sinks before we store an incoming recipe: strip angle
+// brackets from free-text fields and keep the color to a known palette class.
+function sanitizeRecipe(m) {
+  if (!m || typeof m !== "object" || !m.id) return null;
+  const scrub = (s) => (typeof s === "string" ? s.replace(/[<>]/g, "") : s);
+  m.name = scrub(m.name) || "Untitled";
+  m.blurb = scrub(m.blurb);
+  m.emoji = scrub(typeof m.emoji === "string" ? m.emoji : "🍽️");
+  m.sourceUrl = scrub(m.sourceUrl);
+  if (!PALETTE.includes(m.color)) m.color = PALETTE[0];
+  if (Array.isArray(m.ingredients)) m.ingredients.forEach((i) => { if (i && typeof i === "object") { i.name = scrub(i.name); i.unit = scrub(i.unit); } });
+  m.steps = Array.isArray(m.steps) ? m.steps.map(scrub) : [];
+  m.custom = true;
+  return m;
+}
+
+// Merge an incoming plan into ours. Dedupe by meal so the same dish never
+// appears twice; if an incoming meal lands on a day+slot we've already filled,
+// bring it in unscheduled rather than silently hiding it behind our pick.
+function mergePlan(incomingPicks, incomingRecipes) {
+  (incomingRecipes || []).forEach((raw) => {
+    const m = sanitizeRecipe(raw);
+    if (m && !MEALS.find((x) => x.id === m.id)) MEALS.push(m);
+  });
+  saveCustomRecipes();
+
+  const have = new Set(state.picks.map((p) => p.mealId));
+  const occupied = new Set(
+    state.picks.filter((p) => p.day != null && p.slot != null).map((p) => `${p.day}::${p.slot}`)
+  );
+  let added = 0;
+  (incomingPicks || []).forEach((p) => {
+    if (!p || !p.mealId || have.has(p.mealId) || !mealById(p.mealId)) return;
+    let day = p.day ?? null;
+    let slot = typeof p.slot === "number" ? p.slot : null;
+    if (day != null && slot != null) {
+      const key = `${day}::${slot}`;
+      if (occupied.has(key)) { day = null; slot = null; } else occupied.add(key);
+    }
+    state.picks.push({ mealId: p.mealId, day, slot, leftover: !!p.leftover, generated: !!p.generated });
+    have.add(p.mealId);
+    added++;
+  });
+  save();
+  return added;
+}
+
+function overlay() {
+  const modal = document.createElement("div");
+  modal.className = "fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm";
+  modal.style.opacity = "0";
+  modal.style.transition = "opacity 200ms ease";
+  document.body.appendChild(modal);
+  requestAnimationFrame(() => { modal.style.opacity = "1"; });
+  return modal;
+}
+function dismissOverlay(modal) {
+  modal.style.opacity = "0";
+  setTimeout(() => modal.remove(), 200);
+}
+
+function openShareModal(url) {
+  const modal = overlay();
+  const long = url.length > 6000;
+  const n = state.picks.length;
+  modal.innerHTML = `
+    <div class="bg-white rounded-3xl max-w-lg w-full shadow-2xl relative p-7 md:p-8">
+      <button id="s-close" class="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/90 hover:bg-gray-100 grid place-items-center shadow-md text-gray-700" aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+      <div class="text-4xl mb-3">🔗</div>
+      <h2 class="font-display text-3xl font-semibold leading-tight">Share your plan</h2>
+      <p class="text-gray-600 mt-2">Send this link to whoever you're cooking with. Opening it loads your ${n} pick${n === 1 ? "" : "s"} into their browser.</p>
+      <div class="flex gap-2 mt-5">
+        <input id="s-url" type="text" readonly value="${url.replace(/"/g, "&quot;")}" class="flex-1 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 font-mono"/>
+        <button id="s-copy" class="btn-primary whitespace-nowrap">Copy</button>
+      </div>
+      <p id="s-msg" class="text-xs ${long ? "text-amber-600" : "text-gray-500"} mt-2 min-h-[1rem]">${long ? "Heads up: this is a long link (lots of custom recipes) — some chat apps may cut it off." : ""}</p>
+    </div>
+  `;
+  const input = modal.querySelector("#s-url");
+  const msg = modal.querySelector("#s-msg");
+  modal.querySelector("#s-copy").onclick = async () => {
+    input.focus(); input.select(); input.setSelectionRange(0, 99999);
+    let ok = false;
+    try { await navigator.clipboard.writeText(url); ok = true; }
+    catch { try { ok = document.execCommand("copy"); } catch { ok = false; } }
+    msg.innerHTML = ok
+      ? `<span class="text-emerald-700">✓ Copied to clipboard</span>`
+      : `<span class="text-amber-600">Select the link and press Ctrl/⌘+C.</span>`;
+  };
+  modal.querySelector("#s-close").onclick = () => dismissOverlay(modal);
+  modal.onclick = (e) => { if (e.target === modal) dismissOverlay(modal); };
+}
+
+function openImportModal(payload) {
+  const count = Array.isArray(payload.picks) ? payload.picks.length : 0;
+  const modal = overlay();
+  modal.innerHTML = `
+    <div class="bg-white rounded-3xl max-w-lg w-full shadow-2xl relative p-7 md:p-8">
+      <div class="text-4xl mb-3">📨</div>
+      <h2 class="font-display text-3xl font-semibold leading-tight">A meal plan was shared with you</h2>
+      <p class="text-gray-600 mt-2">It has <strong>${count}</strong> meal${count === 1 ? "" : "s"}. Add them to your week? Your current picks stay — anything that overlaps a filled day comes in unscheduled.</p>
+      <div class="flex gap-2 mt-6">
+        <button id="i-add" class="btn-primary flex-1">Add to my week</button>
+        <button id="i-cancel" class="btn-ghost">Not now</button>
+      </div>
+    </div>
+  `;
+  modal.querySelector("#i-add").onclick = () => {
+    mergePlan(payload.picks, payload.recipes);
+    dismissOverlay(modal);
+    state.page = "schedule";
+    render();
+  };
+  modal.querySelector("#i-cancel").onclick = () => dismissOverlay(modal);
+}
+
+function handleIncomingPlan() {
+  const m = (location.hash || "").match(/[#&]plan=([^&]+)/);
+  if (!m) return;
+  let payload = null;
+  try { payload = decodePlan(m[1]); } catch {}
+  // Clear the hash either way so a refresh won't re-prompt and the URL stays tidy.
+  try { history.replaceState(null, "", location.pathname + location.search); } catch {}
+  if (payload && Array.isArray(payload.picks) && payload.picks.length) openImportModal(payload);
+}
+
 // ───────────────────── Boot ─────────────────────
 load();
 render();
+handleIncomingPlan();
 })();
